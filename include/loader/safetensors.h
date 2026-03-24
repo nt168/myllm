@@ -75,6 +75,8 @@ typedef struct SafeTensorsLoader {
     char* json_metadata;        /**< JSON 元数据 */
     size_t json_size;           /**< JSON 大小 */
     bool owns_data;             /**< 是否拥有数据 */
+    bool uses_mmap;             /**< 是否使用 mmap 映射文件 */
+    int mmap_fd;                /**< mmap 文件描述符 */
 } SafeTensorsLoader;
 
 /* ============================================================================

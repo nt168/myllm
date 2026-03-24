@@ -374,8 +374,9 @@ void engine_free(InferenceEngine* engine) {
         sampler_free(engine->sampler);
     }
 
-    /* 模型释放需要根据类型处理 */
-    /* 目前 model 为 NULL，暂不处理 */
+    if (engine->owns_model && engine->model) {
+        llama_model_free(engine->model);
+    }
 
     if (engine->owns_loader && engine->loader) {
         weight_loader_free(engine->loader);

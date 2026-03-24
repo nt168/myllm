@@ -23,6 +23,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 /* ============================================================================
  * 内部 JSON 解析 (简化版，无依赖)
@@ -203,13 +207,34 @@ static bool parse_tensor_info(const char* json_start, const char* name_start, si
 SafeTensorsLoader* safetensors_new(const char* path) {
     if (!path) return NULL;
 
+    /* 优先使用 mmap，避免将大模型完整复制到堆内存 */
+    int fd = open(path, O_RDONLY);
+    if (fd >= 0) {
+        struct stat st;
+        if (fstat(fd, &st) == 0 && st.st_size >= 8) {
+            size_t file_size = (size_t)st.st_size;
+            void* mapped = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+            if (mapped != MAP_FAILED) {
+                SafeTensorsLoader* loader = safetensors_from_memory(mapped, file_size);
+                if (loader) {
+                    loader->uses_mmap = true;
+                    loader->mmap_fd = fd;
+                    loader->owns_data = false;
+                    return loader;
+                }
+                munmap(mapped, file_size);
+            }
+        }
+        close(fd);
+    }
+
     FILE* f = fopen(path, "rb");
     if (!f) {
         fprintf(stderr, "SafeTensors: cannot open file '%s'\n", path);
         return NULL;
     }
 
-    /* 获取文件大小 */
+    /* 回退到 fread 路径 */
     fseek(f, 0, SEEK_END);
     long file_size = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -272,6 +297,8 @@ SafeTensorsLoader* safetensors_from_memory(const void* data, size_t size) {
     loader->data_size = size;
     loader->json_size = json_size;
     loader->owns_data = false;
+    loader->uses_mmap = false;
+    loader->mmap_fd = -1;
 
     /* 复制 JSON 元数据 */
     loader->json_metadata = (char*)malloc(json_size + 1);
@@ -372,9 +399,16 @@ SafeTensorsLoader* safetensors_from_memory(const void* data, size_t size) {
 void safetensors_free(SafeTensorsLoader* loader) {
     if (!loader) return;
 
-    if (loader->owns_data && loader->data) {
+    if (loader->uses_mmap && loader->data && loader->data_size > 0) {
+        munmap(loader->data, loader->data_size);
+    } else if (loader->owns_data && loader->data) {
         free(loader->data);
     }
+
+    if (loader->uses_mmap && loader->mmap_fd >= 0) {
+        close(loader->mmap_fd);
+    }
+
     free(loader->json_metadata);
     free(loader->tensors);
     free(loader);
